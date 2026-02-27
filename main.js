@@ -310,11 +310,11 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 	 * Build a text-based slider bar, e.g. "▓▓▓▓▓▓▓▓░░ 80%"
 	 */
 	_buildBar(pct) {
-		const total = 12
-		const pos = Math.round((pct / 100) * total)
-		const before = '━'.repeat(pos)
-		const after = '─'.repeat(total - pos)
-		return `🔅${before}●${after}🔆 ${pct}%`
+		const total = 10
+		const filled = Math.round((pct / 100) * total)
+		const before = '▰'.repeat(filled)
+		const after = '▱'.repeat(total - filled)
+		return `${before}${after} ${pct}%`
 	}
 
 	updateVariableValues() {
