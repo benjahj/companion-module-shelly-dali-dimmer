@@ -67,6 +67,7 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 	async init(config) {
 		this.config = config
 		this.updateStatus(InstanceStatus.Ok)
+		this.initVariables()
 		this.initActions()
 		this.initFeedbacks()
 		this.startPolling()
@@ -80,6 +81,7 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 		this.config = config
 		this.stopPolling()
 		this.updateStatus(InstanceStatus.Ok)
+		this.initVariables()
 		this.initActions()
 		this.initFeedbacks()
 		this.startPolling()
@@ -180,6 +182,7 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 			const status = await this.shellyRpc('Light.GetStatus')
 			this.lightStatus = { output: !!status.output, brightness: status.brightness ?? 0 }
 			this.updateStatus(InstanceStatus.Ok)
+			this.updateVariableValues()
 			this.checkFeedbacks('light_is_on', 'brightness_level')
 		} catch (_) {
 			// error already logged in shellyRpc()
@@ -197,6 +200,7 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 				callback: async () => {
 					await this.shellyRpc('Light.Set', { on: 'true' })
 					this.lightStatus.output = true
+					this.updateVariableValues()
 					this.checkFeedbacks('light_is_on')
 				},
 			},
@@ -207,6 +211,7 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 				callback: async () => {
 					await this.shellyRpc('Light.Set', { on: 'false' })
 					this.lightStatus.output = false
+					this.updateVariableValues()
 					this.checkFeedbacks('light_is_on')
 				},
 			},
@@ -217,6 +222,7 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 				callback: async () => {
 					await this.shellyRpc('Light.Toggle', {})
 					this.lightStatus.output = !this.lightStatus.output
+					this.updateVariableValues()
 					this.checkFeedbacks('light_is_on')
 				},
 			},
@@ -238,6 +244,7 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 					const step = action.options.step ?? DEFAULT_STEP
 					await this.shellyRpc('Light.Set', { offset: String(step) })
 					this.lightStatus.brightness = Math.min(100, this.lightStatus.brightness + step)
+					this.updateVariableValues()
 					this.checkFeedbacks('brightness_level')
 				},
 			},
@@ -259,6 +266,7 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 					const step = action.options.step ?? DEFAULT_STEP
 					await this.shellyRpc('Light.Set', { offset: String(-step) })
 					this.lightStatus.brightness = Math.max(0, this.lightStatus.brightness - step)
+					this.updateVariableValues()
 					this.checkFeedbacks('brightness_level')
 				},
 			},
@@ -280,9 +288,27 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 					await this.shellyRpc('Light.Set', { brightness: String(brightness), on: brightness > 0 ? 'true' : 'false' })
 					this.lightStatus.brightness = brightness
 					this.lightStatus.output = brightness > 0
+					this.updateVariableValues()
 					this.checkFeedbacks('light_is_on', 'brightness_level')
 				},
 			},
+		})
+	}
+
+	// ── Variables ─────────────────────────────
+
+	initVariables() {
+		this.setVariableDefinitions([
+			{ variableId: 'light_state', name: 'Light State (ON/OFF)' },
+			{ variableId: 'brightness', name: 'Brightness (0–100)' },
+		])
+		this.updateVariableValues()
+	}
+
+	updateVariableValues() {
+		this.setVariableValues({
+			light_state: this.lightStatus.output ? 'ON' : 'OFF',
+			brightness: this.lightStatus.brightness,
 		})
 	}
 
