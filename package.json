@@ -5,7 +5,8 @@
 	"type": "module",
 	"main": "index.js",
 	"scripts": {
-		"start": "node index.js"
+		"start": "node index.js",
+		"build": "companion-module-build"
 	},
 	"dependencies": {
 		"@companion-module/base": "^1.8.0",
@@ -16,4 +17,3 @@
 	},
 	"license": "MIT"
 }
-
