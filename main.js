@@ -14,8 +14,7 @@
  *   Light.GetStatus  → /rpc/Light.GetStatus?id=<lightId>
  */
 
-import { InstanceBase, runEntrypoint, InstanceStatus, combineRgb } from '@companion-module/base'
-import got from 'got'
+const { InstanceBase, runEntrypoint, InstanceStatus, combineRgb } = require('@companion-module/base')
 
 // ─────────────────────────────────────────────
 // CONFIGURABLE: Default port (change here if needed)
@@ -147,8 +146,12 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 		const url = `http://${host}:${port}${profile.rpcPath}/${method}?${query}`
 
 		try {
-			const response = await got.get(url, { timeout: { request: 5000 } })
-			return JSON.parse(response.body)
+			const controller = new AbortController()
+			const timeoutId = setTimeout(() => controller.abort(), 5000)
+			const response = await fetch(url, { signal: controller.signal })
+			clearTimeout(timeoutId)
+			if (!response.ok) throw new Error(`HTTP ${response.status}`)
+			return await response.json()
 		} catch (err) {
 			this.log('error', `Shelly RPC error [${method}]: ${err.message} (URL: ${url})`)
 			this.updateStatus(InstanceStatus.ConnectionFailure, err.message)
