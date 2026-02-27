@@ -312,7 +312,8 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 	_buildBar(pct) {
 		const total = 10
 		const filled = Math.round((pct / 100) * total)
-		return '▓'.repeat(filled) + '░'.repeat(total - filled) + ` ${pct}%`
+		const bar = '█'.repeat(filled) + '▁'.repeat(total - filled)
+		return `☀ ${bar} ${pct}%`
 	}
 
 	updateVariableValues() {
