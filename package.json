@@ -1,10 +1,11 @@
 {
 	"name": "companion-module-shelly-dali-dimmer",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Bitfocus Companion module for Shelly DALI Dimmer Gen3",
 	"type": "module",
 	"main": "main.js",
 	"scripts": {
+		"build": "companion-module-build",
 		"start": "node main.js"
 	},
 	"dependencies": {

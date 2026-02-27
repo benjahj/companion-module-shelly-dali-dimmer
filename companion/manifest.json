@@ -1,9 +1,9 @@
 {
 	"id": "shelly-dali-dimmer",
-	"name": "Shelly DALI Dimmer",
-	"shortname": "ShellyDALI",
+	"name": "Shelly_Dali_Dimmer",
+	"shortname": "Shelly_Dali_Dimmer",
 	"description": "Control Shelly DALI Dimmer Gen3 (and compatible Shelly dimmers) via local HTTP/RPC API. Supports on/off, toggle, dim up/down, set brightness, and live feedback.",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"license": "MIT",
 	"repository": "",
 	"bugs": "",
