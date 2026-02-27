@@ -8,7 +8,7 @@
 		"start": "node main.js"
 	},
 	"dependencies": {
-		"@companion-module/base": "^1.8.0"
+		"@companion-module/base": "~1.13.0"
 	},
 	"engines": {
 		"node": ">=18"
