@@ -1,0 +1,37 @@
+{
+	"id": "shelly-dali-dimmer",
+	"name": "Shelly DALI Dimmer",
+	"shortname": "ShellyDALI",
+	"description": "Control Shelly DALI Dimmer Gen3 (and compatible Shelly dimmers) via local HTTP/RPC API. Supports on/off, toggle, dim up/down, set brightness, and live feedback.",
+	"version": "1.0.0",
+	"license": "MIT",
+	"repository": "",
+	"bugs": "",
+	"maintainers": [
+		{
+			"name": "Custom Module"
+		}
+	],
+	"legacyIds": [],
+	"runtime": {
+		"type": "node18",
+		"api": "nodejs-ipc",
+		"apiVersion": "1.14.1",
+		"entrypoint": "../index.js"
+	},
+	"manufacturer": "Shelly",
+	"products": [
+		"Shelly DALI Dimmer Gen3",
+		"Shelly Dimmer 2",
+		"Shelly Plus Dimmer 1PM",
+		"Shelly Plus Dimmer 10V PM"
+	],
+	"keywords": [
+		"Shelly",
+		"DALI",
+		"Dimmer",
+		"Light",
+		"Gen3"
+	]
+}
+
