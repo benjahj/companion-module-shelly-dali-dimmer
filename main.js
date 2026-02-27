@@ -301,14 +301,26 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 		this.setVariableDefinitions([
 			{ variableId: 'light_state', name: 'Light State (ON/OFF)' },
 			{ variableId: 'brightness', name: 'Brightness (0–100)' },
+			{ variableId: 'brightness_bar', name: 'Brightness Bar' },
 		])
 		this.updateVariableValues()
 	}
 
+	/**
+	 * Build a text-based slider bar, e.g. "▓▓▓▓▓▓▓▓░░ 80%"
+	 */
+	_buildBar(pct) {
+		const total = 10
+		const filled = Math.round((pct / 100) * total)
+		return '▓'.repeat(filled) + '░'.repeat(total - filled) + ` ${pct}%`
+	}
+
 	updateVariableValues() {
+		const pct = this.lightStatus.brightness
 		this.setVariableValues({
 			light_state: this.lightStatus.output ? 'ON' : 'OFF',
-			brightness: this.lightStatus.brightness,
+			brightness: pct,
+			brightness_bar: this._buildBar(pct),
 		})
 	}
 
