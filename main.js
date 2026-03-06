@@ -61,6 +61,8 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 	/** Current known light status {output: bool, brightness: number} */
 	lightStatus = { output: false, brightness: 0 }
 	pollTimer = null
+	/** Active fade interval (cleared on new fade or destroy) */
+	_fadeTimer = null
 
 	// ── Lifecycle ──────────────────────────────
 
@@ -75,6 +77,7 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 
 	async destroy() {
 		this.stopPolling()
+		this._cancelFade()
 	}
 
 	async configUpdated(config) {
@@ -292,7 +295,80 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 					this.checkFeedbacks('light_is_on', 'brightness_level')
 				},
 			},
+
+			fade_to_brightness: {
+				name: 'Fade to Brightness',
+				options: [
+					{
+						type: 'number',
+						id: 'target',
+						label: 'Target Brightness (0–100)',
+						default: 100,
+						min: 0,
+						max: 100,
+					},
+					{
+						type: 'number',
+						id: 'duration',
+						label: 'Duration (seconds)',
+						default: 3,
+						min: 0.5,
+						max: 60,
+						step: 0.5,
+					},
+				],
+				callback: async (action) => {
+					const target = Math.round(action.options.target ?? 100)
+					const duration = action.options.duration ?? 3
+					this._startFade(target, duration)
+				},
+			},
 		})
+	}
+
+	// ── Fade helpers ─────────────────────────────
+
+	_cancelFade() {
+		if (this._fadeTimer) {
+			clearInterval(this._fadeTimer)
+			this._fadeTimer = null
+		}
+	}
+
+	_startFade(target, durationSec) {
+		this._cancelFade()
+
+		const startBrightness = this.lightStatus.brightness
+		const diff = target - startBrightness
+		if (diff === 0) return
+
+		// Calculate update interval: aim for ~20 steps/sec but at least 1 step per tick
+		const TICK_MS = 50
+		const totalTicks = Math.max(1, Math.round((durationSec * 1000) / TICK_MS))
+		let currentTick = 0
+
+		this._fadeTimer = setInterval(async () => {
+			currentTick++
+			const progress = Math.min(currentTick / totalTicks, 1)
+			const newBrightness = Math.round(startBrightness + diff * progress)
+
+			try {
+				await this.shellyRpc('Light.Set', {
+					brightness: String(newBrightness),
+					on: newBrightness > 0 ? 'true' : 'false',
+				})
+				this.lightStatus.brightness = newBrightness
+				this.lightStatus.output = newBrightness > 0
+				this.updateVariableValues()
+				this.checkFeedbacks('light_is_on', 'brightness_level')
+			} catch (_) {
+				// error logged in shellyRpc
+			}
+
+			if (progress >= 1) {
+				this._cancelFade()
+			}
+		}, TICK_MS)
 	}
 
 	// ── Variables ─────────────────────────────
