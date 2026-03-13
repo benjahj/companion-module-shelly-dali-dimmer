@@ -4,7 +4,7 @@
 	"id": "shelly-dali-dimmer",
 	"name": "Shelly DALI Dimmer",
 	"shortname": "Shelly DALI",
-	"description": "Control Shelly DALI Dimmer Gen3 (and compatible Shelly dimmers) via local HTTP/RPC API. Supports on/off, toggle, dim up/down, set brightness, and live feedback.",
+	"description": "Control Shelly DALI Dimmer Gen3 and compatible Shelly dimmer devices from Bitfocus Companion via the local HTTP/RPC API. Supports on/off, toggle, dim up/down, set brightness, fade, and live brightness feedback. No cloud or Shelly account required.",
 	"version": "1.0.2",
 	"license": "MIT",
 	"repository": "git+https://github.com/benjahj/companion-module-shelly-dali-dimmer.git",
@@ -35,7 +35,14 @@
 		"DALI",
 		"Dimmer",
 		"Light",
-		"Gen3"
+		"Lighting",
+		"Gen3",
+		"Gen2",
+		"HTTP",
+		"RPC",
+		"Local",
+		"Brightness",
+		"Fade"
 	]
 }
 
