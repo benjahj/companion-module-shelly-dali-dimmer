@@ -15,6 +15,7 @@
  */
 
 const { InstanceBase, runEntrypoint, InstanceStatus, combineRgb } = require('@companion-module/base')
+const WebSocket = require('ws')
 
 // ─────────────────────────────────────────────
 // CONFIGURABLE: Default port (change here if needed)
@@ -56,12 +57,13 @@ const DEVICE_PROFILES = {
 
 // ─────────────────────────────────────────────
 // CONFIGURABLE: Push event labels and auto-reset delay
+// Maps Shelly WebSocket NotifyEvent names → display labels
 // ─────────────────────────────────────────────
 const PUSH_EVENT_MAP = {
-	'S': 'Single',
-	'SS': 'Dobbelt',
-	'SSS': 'Tripple',
-	'L': 'Langt',
+	'single_push': 'Single',
+	'double_push': 'Dobbelt',
+	'triple_push': 'Tripple',
+	'long_push': 'Langt',
 }
 const PUSH_RESET_MS = 3000
 
@@ -77,7 +79,11 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 	/** Current push type display values per input */
 	_pushType = ['N/A', 'N/A']
 	_pushResetTimer = [null, null]
-	_lastEventCount = [-1, -1]
+	/** WebSocket state */
+	ws = null
+	wsConnected = false
+	wsReconnectTimer = null
+	wsMsgId = 1
 
 	// ── Lifecycle ──────────────────────────────
 
@@ -88,11 +94,13 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 		this.initActions()
 		this.initFeedbacks()
 		this.startPolling()
+		this._connectWebSocket()
 	}
 
 	async destroy() {
 		this.stopPolling()
 		this._cancelFade()
+		this._cleanupWs()
 		for (const t of this._pushResetTimer) {
 			if (t) clearTimeout(t)
 		}
@@ -102,11 +110,13 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 	async configUpdated(config) {
 		this.config = config
 		this.stopPolling()
+		this._cleanupWs()
 		this.updateStatus(InstanceStatus.Ok)
 		this.initVariables()
 		this.initActions()
 		this.initFeedbacks()
 		this.startPolling()
+		this._connectWebSocket()
 	}
 
 	// ── Config fields ──────────────────────────
@@ -201,14 +211,8 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 
 	async pollStatus() {
 		try {
-			const [status, input0, input1] = await Promise.all([
-				this.shellyRpc('Light.GetStatus'),
-				this.shellyRpc('Input.GetStatus', { id: '0' }),
-				this.shellyRpc('Input.GetStatus', { id: '1' }),
-			])
+			const status = await this.shellyRpc('Light.GetStatus')
 			this.lightStatus = { output: !!status.output, brightness: status.brightness ?? 0 }
-			this._handleInputEvent(0, input0)
-			this._handleInputEvent(1, input1)
 			this.updateStatus(InstanceStatus.Ok)
 			this.updateVariableValues()
 			this.checkFeedbacks('light_is_on', 'brightness_level')
@@ -217,27 +221,115 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 		}
 	}
 
-	_handleInputEvent(idx, inputStatus) {
-		const count = inputStatus.last_event_count ?? 0
-		const event = inputStatus.last_event ?? ''
+	// ── WebSocket (input events) ──────────────
 
-		if (this._lastEventCount[idx] === -1) {
-			// First poll – store baseline, don't trigger display
-			this._lastEventCount[idx] = count
+	_connectWebSocket() {
+		if (!this.config || !this.config.host) return
+
+		const port = parseInt(this.config.port) || DEFAULT_PORT
+		const url = `ws://${this.config.host}:${port}/rpc`
+		this.log('debug', `WS connecting to ${url}`)
+
+		let ws
+		try {
+			ws = new WebSocket(url, { handshakeTimeout: 4000 })
+		} catch (err) {
+			this.log('error', `WS creation failed: ${err.message}`)
+			this._scheduleReconnect()
 			return
 		}
+		this.ws = ws
 
-		if (count !== this._lastEventCount[idx]) {
-			this._lastEventCount[idx] = count
-			this._pushType[idx] = PUSH_EVENT_MAP[event] ?? 'N/A'
+		ws.on('open', () => {
+			this.wsConnected = true
+			this.log('debug', 'WS connected')
+			// Subscribe to device events
+			this._wsSend('Shelly.GetStatus', {})
+		})
 
-			if (this._pushResetTimer[idx]) {
-				clearTimeout(this._pushResetTimer[idx])
+		ws.on('message', (data) => {
+			try {
+				this._handleWsMessage(JSON.parse(data.toString()))
+			} catch (e) {
+				this.log('warn', `WS parse error: ${e.message}`)
 			}
+		})
+
+		ws.on('close', () => {
+			this.wsConnected = false
+			this.log('debug', 'WS closed')
+			this._scheduleReconnect()
+		})
+
+		ws.on('error', (err) => {
+			this.log('error', `WS error: ${err.message}`)
+			this.wsConnected = false
+			ws.close()
+		})
+	}
+
+	_cleanupWs() {
+		if (this.wsReconnectTimer) {
+			clearTimeout(this.wsReconnectTimer)
+			this.wsReconnectTimer = null
+		}
+		if (this.ws) {
+			this.ws.removeAllListeners()
+			this.ws.close()
+			this.ws = null
+		}
+		this.wsConnected = false
+	}
+
+	_scheduleReconnect() {
+		if (this.wsReconnectTimer) return
+		this.wsReconnectTimer = setTimeout(() => {
+			this.wsReconnectTimer = null
+			this._connectWebSocket()
+		}, 5000)
+	}
+
+	_wsSend(method, params) {
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+		const frame = { id: this.wsMsgId++, src: 'companion-shelly', method, params }
+		this.ws.send(JSON.stringify(frame))
+	}
+
+	_handleWsMessage(msg) {
+		// NotifyEvent — real-time button events from the device
+		if (msg.method === 'NotifyEvent') {
+			const events = msg.params && msg.params.events
+			if (!Array.isArray(events)) return
+
+			for (const ev of events) {
+				let idx = -1
+				if (ev.component === 'input:0') idx = 0
+				else if (ev.component === 'input:1') idx = 1
+				if (idx === -1) continue
+
+				this.log('debug', `Input ${idx} event: ${ev.event}`)
+
+				const label = PUSH_EVENT_MAP[ev.event]
+				if (label) {
+					this._updateInputPushType(idx, label)
+				}
+			}
+		}
+	}
+
+	_updateInputPushType(idx, type) {
+		if (this._pushResetTimer[idx]) {
+			clearTimeout(this._pushResetTimer[idx])
+			this._pushResetTimer[idx] = null
+		}
+
+		this._pushType[idx] = type
+		this.updateVariableValues()
+
+		if (type !== 'N/A') {
 			this._pushResetTimer[idx] = setTimeout(() => {
-				this._pushType[idx] = 'N/A'
 				this._pushResetTimer[idx] = null
-				this.updateVariableValues()
+				this._updateInputPushType(idx, 'N/A')
 			}, PUSH_RESET_MS)
 		}
 	}
