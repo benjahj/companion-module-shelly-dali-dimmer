@@ -74,10 +74,10 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 	pollTimer = null
 	/** Active fade interval (cleared on new fade or destroy) */
 	_fadeTimer = null
-	/** Current push type display value */
-	_pushType = 'N/A'
-	_pushResetTimer = null
-	_lastEventCount = -1
+	/** Current push type display values per input */
+	_pushType = ['N/A', 'N/A']
+	_pushResetTimer = [null, null]
+	_lastEventCount = [-1, -1]
 
 	// ── Lifecycle ──────────────────────────────
 
@@ -93,10 +93,10 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 	async destroy() {
 		this.stopPolling()
 		this._cancelFade()
-		if (this._pushResetTimer) {
-			clearTimeout(this._pushResetTimer)
-			this._pushResetTimer = null
+		for (const t of this._pushResetTimer) {
+			if (t) clearTimeout(t)
 		}
+		this._pushResetTimer = [null, null]
 	}
 
 	async configUpdated(config) {
@@ -201,12 +201,14 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 
 	async pollStatus() {
 		try {
-			const [status, inputStatus] = await Promise.all([
+			const [status, input0, input1] = await Promise.all([
 				this.shellyRpc('Light.GetStatus'),
-				this.shellyRpc('Input.GetStatus'),
+				this.shellyRpc('Input.GetStatus', { id: '0' }),
+				this.shellyRpc('Input.GetStatus', { id: '1' }),
 			])
 			this.lightStatus = { output: !!status.output, brightness: status.brightness ?? 0 }
-			this._handleInputEvent(inputStatus)
+			this._handleInputEvent(0, input0)
+			this._handleInputEvent(1, input1)
 			this.updateStatus(InstanceStatus.Ok)
 			this.updateVariableValues()
 			this.checkFeedbacks('light_is_on', 'brightness_level')
@@ -215,26 +217,26 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 		}
 	}
 
-	_handleInputEvent(inputStatus) {
+	_handleInputEvent(idx, inputStatus) {
 		const count = inputStatus.last_event_count ?? 0
 		const event = inputStatus.last_event ?? ''
 
-		if (this._lastEventCount === -1) {
+		if (this._lastEventCount[idx] === -1) {
 			// First poll – store baseline, don't trigger display
-			this._lastEventCount = count
+			this._lastEventCount[idx] = count
 			return
 		}
 
-		if (count !== this._lastEventCount) {
-			this._lastEventCount = count
-			this._pushType = PUSH_EVENT_MAP[event] ?? 'N/A'
+		if (count !== this._lastEventCount[idx]) {
+			this._lastEventCount[idx] = count
+			this._pushType[idx] = PUSH_EVENT_MAP[event] ?? 'N/A'
 
-			if (this._pushResetTimer) {
-				clearTimeout(this._pushResetTimer)
+			if (this._pushResetTimer[idx]) {
+				clearTimeout(this._pushResetTimer[idx])
 			}
-			this._pushResetTimer = setTimeout(() => {
-				this._pushType = 'N/A'
-				this._pushResetTimer = null
+			this._pushResetTimer[idx] = setTimeout(() => {
+				this._pushType[idx] = 'N/A'
+				this._pushResetTimer[idx] = null
 				this.updateVariableValues()
 			}, PUSH_RESET_MS)
 		}
@@ -426,7 +428,8 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 			{ variableId: 'light_state', name: 'Light State (ON/OFF)' },
 			{ variableId: 'brightness', name: 'Brightness (0–100)' },
 			{ variableId: 'brightness_bar', name: 'Brightness Bar' },
-			{ variableId: 'input_push_type', name: 'Input Push Type' },
+			{ variableId: 'input_push_type_0', name: 'Input 0 Push Type' },
+			{ variableId: 'input_push_type_1', name: 'Input 1 Push Type' },
 		])
 		this.updateVariableValues()
 	}
@@ -448,7 +451,8 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 			light_state: this.lightStatus.output ? 'ON' : 'OFF',
 			brightness: pct,
 			brightness_bar: this._buildBar(pct),
-			input_push_type: this._pushType,
+			input_push_type_0: this._pushType[0],
+			input_push_type_1: this._pushType[1],
 		})
 	}
 
