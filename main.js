@@ -79,6 +79,8 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 	/** Current push type display values per input */
 	_pushType = ['N/A', 'N/A']
 	_pushResetTimer = [null, null]
+	/** Physical button state per input (true = pressed, false = released) */
+	_inputState = [false, false]
 	/** WebSocket state */
 	ws = null
 	wsConnected = false
@@ -309,7 +311,14 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 
 				this.log('debug', `Input ${idx} event: ${ev.event}`)
 
+				if (ev.event === 'btn_down') {
+					this._inputState[idx] = true
+					this.updateVariableValues()
+					continue
+				}
+
 				if (ev.event === 'btn_up') {
+					this._inputState[idx] = false
 					this._updateInputPushType(idx, 'N/A')
 					continue
 				}
@@ -527,6 +536,8 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 			{ variableId: 'brightness_bar', name: 'Brightness Bar' },
 			{ variableId: 'input_push_type_0', name: 'Input 0 Push Type' },
 			{ variableId: 'input_push_type_1', name: 'Input 1 Push Type' },
+			{ variableId: 'input_state_0', name: 'Input 0 State (1=pressed, 0=released)' },
+			{ variableId: 'input_state_1', name: 'Input 1 State (1=pressed, 0=released)' },
 		])
 		this.updateVariableValues()
 	}
@@ -550,6 +561,8 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 			brightness_bar: this._buildBar(pct),
 			input_push_type_0: this._pushType[0],
 			input_push_type_1: this._pushType[1],
+			input_state_0: this._inputState[0] ? 1 : 0,
+			input_state_1: this._inputState[1] ? 1 : 0,
 		})
 	}
 
