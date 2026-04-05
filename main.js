@@ -65,7 +65,7 @@ const PUSH_EVENT_MAP = {
 	'triple_push': 'Tripple',
 	'long_push': 'Langt',
 }
-const PUSH_RESET_MS = 3000
+const PUSH_RESET_MS = 1000
 
 // ─────────────────────────────────────────────
 // Module class
@@ -308,6 +308,11 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 				if (idx === -1) continue
 
 				this.log('debug', `Input ${idx} event: ${ev.event}`)
+
+				if (ev.event === 'btn_up') {
+					this._updateInputPushType(idx, 'N/A')
+					continue
+				}
 
 				const label = PUSH_EVENT_MAP[ev.event]
 				if (label) {
