@@ -68,6 +68,18 @@ const PUSH_EVENT_MAP = {
 const PUSH_RESET_MS = 1000
 
 // ─────────────────────────────────────────────
+// CONFIGURABLE: WebSocket keepalive.
+// The device only ever speaks to us when a physical button is pressed, so an
+// idle socket can be silently evicted by any stateful firewall or NAT between
+// Companion and the device. Nothing in TCP tells either end. We ping
+// so the flow stays warm AND so a dead socket is detected instead of hanging
+// open forever in readyState OPEN.
+// ─────────────────────────────────────────────
+const WS_PING_MS = 20000
+const WS_RECONNECT_MIN_MS = 2000
+const WS_RECONNECT_MAX_MS = 30000
+
+// ─────────────────────────────────────────────
 // Module class
 // ─────────────────────────────────────────────
 class ShellyDaliDimmerInstance extends InstanceBase {
@@ -86,12 +98,21 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 	wsConnected = false
 	wsReconnectTimer = null
 	wsMsgId = 1
+	/** Heartbeat state — _wsAlive is cleared on each ping, set by any inbound frame */
+	_wsPingTimer = null
+	_wsAlive = false
+	_wsRetries = 0
+	/** Last status pushed to Companion, so we only report changes */
+	_status = null
+	_statusMsg = null
+	_httpOk = true
 
 	// ── Lifecycle ──────────────────────────────
 
 	async init(config) {
 		this.config = config
-		this.updateStatus(InstanceStatus.Ok)
+		this._httpOk = true
+		this._refreshStatus()
 		this.initVariables()
 		this.initActions()
 		this.initFeedbacks()
@@ -113,12 +134,43 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 		this.config = config
 		this.stopPolling()
 		this._cleanupWs()
-		this.updateStatus(InstanceStatus.Ok)
+		this._wsRetries = 0
+		this._httpOk = true
+		this._refreshStatus()
 		this.initVariables()
 		this.initActions()
 		this.initFeedbacks()
 		this.startPolling()
 		this._connectWebSocket()
+	}
+
+	// ── Status reporting ───────────────────────
+
+	/**
+	 * Only forward a status to Companion when it actually changes. Calling
+	 * updateStatus() on every poll is what fills the log with one
+	 * "Status: ok - null" line every polling interval.
+	 */
+	_setStatus(status, msg = null) {
+		if (status === this._status && msg === this._statusMsg) return
+		this._status = status
+		this._statusMsg = msg
+		this.updateStatus(status, msg)
+	}
+
+	/**
+	 * Combine HTTP health and WebSocket health into one reported status.
+	 * HTTP polling can be perfectly healthy while the event socket is dead —
+	 * that combination must not report "ok", because button events are the
+	 * half that is broken.
+	 */
+	_refreshStatus() {
+		if (!this._httpOk) return
+		if (this.wsConnected) {
+			this._setStatus(InstanceStatus.Ok)
+		} else {
+			this._setStatus(InstanceStatus.UnknownWarning, 'Button events offline (WebSocket down)')
+		}
 	}
 
 	// ── Config fields ──────────────────────────
@@ -190,7 +242,8 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 			return await response.json()
 		} catch (err) {
 			this.log('error', `Shelly RPC error [${method}]: ${err.message} (URL: ${url})`)
-			this.updateStatus(InstanceStatus.ConnectionFailure, err.message)
+			this._httpOk = false
+			this._setStatus(InstanceStatus.ConnectionFailure, err.message)
 			throw err
 		}
 	}
@@ -215,7 +268,8 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 		try {
 			const status = await this.shellyRpc('Light.GetStatus')
 			this.lightStatus = { output: !!status.output, brightness: status.brightness ?? 0 }
-			this.updateStatus(InstanceStatus.Ok)
+			this._httpOk = true
+			this._refreshStatus()
 			this.updateVariableValues()
 			this.checkFeedbacks('light_is_on', 'brightness_level')
 		} catch (_) {
@@ -227,6 +281,16 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 
 	_connectWebSocket() {
 		if (!this.config || !this.config.host) return
+
+		// Drop any previous socket first. Without this a lingering socket keeps
+		// its listeners, can fire 'close' later and schedule a *second* reconnect,
+		// and burns one of the device's 6 concurrent RPC channels.
+		if (this.ws) {
+			this.ws.removeAllListeners()
+			try { this.ws.terminate() } catch (_) { /* already gone */ }
+			this.ws = null
+		}
+		this._stopHeartbeat()
 
 		const port = parseInt(this.config.port) || DEFAULT_PORT
 		const url = `ws://${this.config.host}:${port}/rpc`
@@ -244,12 +308,18 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 
 		ws.on('open', () => {
 			this.wsConnected = true
+			this._wsRetries = 0
 			this.log('debug', 'WS connected')
-			// Subscribe to device events
+			// A request frame carrying a valid `src` is what subscribes this
+			// connection to NotifyEvent / NotifyStatus. Without it the device
+			// never pushes anything.
 			this._wsSend('Shelly.GetStatus', {})
+			this._startHeartbeat()
+			this._refreshStatus()
 		})
 
 		ws.on('message', (data) => {
+			this._wsAlive = true
 			try {
 				this._handleWsMessage(JSON.parse(data.toString()))
 			} catch (e) {
@@ -257,9 +327,16 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 			}
 		})
 
+		ws.on('pong', () => {
+			this._wsAlive = true
+		})
+
 		ws.on('close', () => {
+			if (this.ws !== ws) return // superseded socket, ignore
 			this.wsConnected = false
+			this._stopHeartbeat()
 			this.log('debug', 'WS closed')
+			this._refreshStatus()
 			this._scheduleReconnect()
 		})
 
@@ -270,25 +347,80 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 		})
 	}
 
+	// ── WebSocket heartbeat ───────────────────
+
+	/**
+	 * Ping every WS_PING_MS and terminate if the previous ping was never
+	 * answered. The socket carries no traffic between button presses, so when
+	 * the flow is dropped without a clean close (device reboot, Wi-Fi drop,
+	 * firewall or NAT idle timeout) no FIN or RST arrives. readyState stays
+	 * OPEN, 'close' never fires, and no reconnect is ever scheduled — the
+	 * module sits holding a dead socket while HTTP polling keeps reporting
+	 * "ok", until someone disables and re-enables the connection.
+	 */
+	_startHeartbeat() {
+		this._stopHeartbeat()
+		this._wsAlive = true
+		this._wsPingTimer = setInterval(() => {
+			const ws = this.ws
+			if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+			if (!this._wsAlive) {
+				this.log('warn', 'WS heartbeat missed — terminating dead socket and reconnecting')
+				try { ws.terminate() } catch (_) { /* nothing to do */ }
+				return // 'close' fires and schedules the reconnect
+			}
+
+			this._wsAlive = false
+			try {
+				ws.ping()
+			} catch (err) {
+				this.log('warn', `WS ping failed: ${err.message}`)
+				try { ws.terminate() } catch (_) { /* nothing to do */ }
+			}
+		}, WS_PING_MS)
+	}
+
+	_stopHeartbeat() {
+		if (this._wsPingTimer) {
+			clearInterval(this._wsPingTimer)
+			this._wsPingTimer = null
+		}
+		this._wsAlive = false
+	}
+
 	_cleanupWs() {
+		this._stopHeartbeat()
 		if (this.wsReconnectTimer) {
 			clearTimeout(this.wsReconnectTimer)
 			this.wsReconnectTimer = null
 		}
 		if (this.ws) {
 			this.ws.removeAllListeners()
-			this.ws.close()
+			// terminate(), not close(): we have just removed the listeners that
+			// would observe the closing handshake, so a graceful close could
+			// leave the socket half-shut and the channel allocated on the device.
+			try { this.ws.terminate() } catch (_) { /* already gone */ }
 			this.ws = null
 		}
 		this.wsConnected = false
 	}
 
+	/**
+	 * Exponential backoff with jitter. A flat 5s retry against an unreachable
+	 * device is 12 connection attempts a minute, forever — enough to keep a
+	 * rate-limiting firewall permanently unhappy with the Companion host.
+	 */
 	_scheduleReconnect() {
 		if (this.wsReconnectTimer) return
+		const backoff = Math.min(WS_RECONNECT_MAX_MS, WS_RECONNECT_MIN_MS * Math.pow(2, this._wsRetries))
+		const delay = Math.round(backoff * (0.5 + Math.random() * 0.5))
+		this._wsRetries++
+		this.log('debug', `WS reconnect in ${delay}ms`)
 		this.wsReconnectTimer = setTimeout(() => {
 			this.wsReconnectTimer = null
 			this._connectWebSocket()
-		}, 5000)
+		}, delay)
 	}
 
 	_wsSend(method, params) {
@@ -297,7 +429,28 @@ class ShellyDaliDimmerInstance extends InstanceBase {
 		this.ws.send(JSON.stringify(frame))
 	}
 
+	/** The light component key this instance's profile targets, e.g. "light:0" */
+	_lightKey() {
+		const profile = DEVICE_PROFILES[this.config.deviceType] ?? DEVICE_PROFILES['shelly-dali-dimmer-gen3']
+		return `light:${profile.lightId}`
+	}
+
 	_handleWsMessage(msg) {
+		// NotifyStatus / NotifyFullStatus — real-time output and brightness.
+		// The device already pushes these; using them means feedback is instant
+		// instead of up to one polling interval stale, and lets the polling
+		// interval be raised to a sanity check rather than the primary source.
+		if (msg.method === 'NotifyStatus' || msg.method === 'NotifyFullStatus') {
+			const light = msg.params && msg.params[this._lightKey()]
+			if (light) {
+				if (typeof light.output === 'boolean') this.lightStatus.output = light.output
+				if (typeof light.brightness === 'number') this.lightStatus.brightness = light.brightness
+				this.updateVariableValues()
+				this.checkFeedbacks('light_is_on', 'brightness_level')
+			}
+			return
+		}
+
 		// NotifyEvent — real-time button events from the device
 		if (msg.method === 'NotifyEvent') {
 			const events = msg.params && msg.params.events
